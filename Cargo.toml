@@ -9,6 +9,7 @@ members = [
   "./streaming",
   "./sys",
 ]
+resolver = "3"
 
 [profile.release]
 debug = true

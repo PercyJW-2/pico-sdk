@@ -1,6 +1,7 @@
 use super::{PicoCoupling, PicoRange};
 use num_derive::*;
 use std::convert::From;
+use num_traits::FromPrimitive;
 
 /// Pico time units
 #[derive(Debug, Clone, Copy, FromPrimitive, ToPrimitive, PartialEq, Eq)]

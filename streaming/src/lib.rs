@@ -58,7 +58,7 @@ use pico_common::{
     SetSigGenBuiltInV2Properties, SigGenArbitraryMinMaxValues, SweepShotCount,
 };
 use pico_device::PicoDevice;
-use std::{collections::HashMap, fmt, sync::Arc, thread, thread::JoinHandle, time::Duration};
+use std::{collections::HashMap, fmt::{self, Display}, sync::Arc, thread, thread::JoinHandle, time::Duration};
 use tracing::*;
 
 mod events;

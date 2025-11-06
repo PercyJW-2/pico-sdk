@@ -1,7 +1,7 @@
 [package]
 authors = ["Tim Fish <tim@timfish.uk>"]
 description = "Unofficial Rust bindings and wrappers for Pico Technology oscilloscope drivers"
-edition = "2021"
+edition = "2024"
 keywords = ["Oscilloscope", "Streaming", "PicoScope", "Pico-Technology"]
 license = "MIT"
 name = "pico-download"
