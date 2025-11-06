@@ -7,12 +7,7 @@ use crate::{
 use c_vec::CVec;
 use lazy_static::lazy_static;
 use parking_lot::{Mutex, RwLock};
-use pico_common::{
-    ChannelConfig, DownsampleMode, Driver, FromPicoStr, PicoChannel, PicoError,
-    PicoExtraOperations, PicoIndexMode, PicoInfo, PicoRange, PicoResult, PicoSigGenTrigSource,
-    PicoSigGenTrigType, PicoStatus, PicoSweepType, SampleConfig, SigGenArbitraryMinMaxValues,
-    SweepShotCount, ToPicoStr,
-};
+use pico_common::{ChannelConfig, DownsampleMode, Driver, FromPicoStr, PicoChannel, PicoError, PicoExtraOperations, PicoIndexMode, PicoInfo, PicoRange, PicoResult, PicoSigGenTrigSource, PicoSigGenTrigType, PicoStatus, PicoSweepType, SampleConfig, SetSigGenBuiltInV2Properties, SigGenArbitraryMinMaxValues, SweepShotCount, ToPicoStr};
 use pico_sys_dynamic::{
     ps4000a::PS4000A_MIN_DWELL_COUNT,
     ps4000a::{
@@ -21,6 +16,7 @@ use pico_sys_dynamic::{
     },
 };
 use std::{collections::HashMap, matches, sync::Arc};
+use pico_sys_dynamic::ps4000a::PS4000A_WAVE_TYPE;
 
 type ChannelRangesMap = HashMap<PicoChannel, Vec<PicoRange>>;
 
@@ -401,7 +397,38 @@ impl PicoDriver for PS4000ADriver {
             .to_result((), "sig_gen_software_control")
     }
 
-    // PS4000A has no SetSigGenBuiltInV2
+    // PS4000A has no SetSigGenBuiltInV2 - but it has SetSigGenBuildInV2
+    #[tracing::instrument(level = "trace", skip(self))]
+    fn set_sig_gen_built_in_v2(
+        &self,
+        handle: i16,
+        props: SetSigGenBuiltInV2Properties
+    ) -> PicoResult<()> {
+        tracing::trace!(
+            sweeps = props.sweeps_shots.to_sweeps(),
+            shots = props.sweeps_shots.to_shots()
+        );
+        PicoStatus::from(unsafe {
+            self.bindings.ps4000aSetSigGenBuiltIn(
+                handle,
+                props.offset_voltage,
+                props.pk_to_pk,
+                props.wave_type as PS4000A_WAVE_TYPE,
+                props.start_frequency,
+                props.stop_frequency,
+                props.increment,
+                props.dwell_time,
+                props.sweep_type as PS4000A_SWEEP_TYPE,
+                props.extra_operations as PS4000A_EXTRA_OPERATIONS,
+                props.sweeps_shots.to_shots(),
+                props.sweeps_shots.to_sweeps(),
+                props.trig_type as PS4000A_SIGGEN_TRIG_TYPE,
+                props.trig_source as PS4000A_SIGGEN_TRIG_SOURCE,
+                props.ext_in_threshold,
+            )
+        })
+            .to_result((), "set_siggen_build_in_v2")
+    }
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn set_sig_gen_arbitrary(
