@@ -53,13 +53,93 @@ use events::StreamingEvents;
 pub use events::{NewDataHandler, RawChannelDataBlock, StreamingEvent};
 use parking_lot::RwLock;
 use pico_common::{
-    ChannelConfig, PicoChannel, PicoCoupling, PicoRange, PicoResult, PicoStatus, SampleConfig,
+    ChannelConfig, PicoChannel, PicoCoupling, PicoExtraOperations, PicoIndexMode, PicoRange,
+    PicoResult, PicoSigGenTrigSource, PicoSigGenTrigType, PicoStatus, PicoSweepType, SampleConfig,
+    SetSigGenBuiltInV2Properties, SigGenArbitraryMinMaxValues, SweepShotCount,
 };
 use pico_device::PicoDevice;
 use std::{collections::HashMap, fmt, sync::Arc, thread, thread::JoinHandle, time::Duration};
 use tracing::*;
 
 mod events;
+
+#[derive(Debug, Clone)]
+pub enum SetSigGenArbitraryPhaseProperties {
+    PhasesFull {
+        start: u32,
+        stop: u32,
+        increment: u32,
+        dwell_count: u32,
+    },
+    // TODO: FrequencyHzSweep { start: f64, stop: f64, increment: f64, duration_secs: f64}
+    FrequencyConstantHz(f64),
+}
+
+impl Default for SetSigGenArbitraryPhaseProperties {
+    fn default() -> Self {
+        SetSigGenArbitraryPhaseProperties::FrequencyConstantHz(10.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SetSigGenArbitraryProperties {
+    pub offset_voltage: i32, /* microvolts */
+    pub pk_to_pk: u32,       /* microvolts */
+    pub phase_props: SetSigGenArbitraryPhaseProperties,
+    pub arbitrary_waveform: Vec<i16>,
+    pub sweep_type: PicoSweepType,
+    pub extra_operations: PicoExtraOperations,
+    pub sweeps_shots: SweepShotCount,
+    pub trig_type: PicoSigGenTrigType,
+    pub trig_source: PicoSigGenTrigSource,
+    pub ext_in_threshold: i16,
+}
+
+impl Display for SetSigGenArbitraryProperties {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "offset_voltage: {:?}\n\
+            pk_to_pk: {:?}\n\
+            phase_props: {:?}\n\
+            arbitrary_waveform[..5] {:?} (#{})\n\
+            sweep_type: {:?}\n\
+            extra_operations: {:?}\n\
+            sweeps_shots: {:?}\n\
+            trig_type: {:?}\n\
+            trig_source: {:?}\n\
+            ext_in_threshold: {:?}\n",
+            self.offset_voltage,
+            self.pk_to_pk,
+            self.phase_props,
+            &self.arbitrary_waveform[..5],
+            self.arbitrary_waveform.len(),
+            self.sweep_type,
+            self.extra_operations,
+            self.sweeps_shots,
+            self.trig_type,
+            self.trig_source,
+            self.ext_in_threshold,
+        )
+    }
+}
+
+impl Default for SetSigGenArbitraryProperties {
+    fn default() -> Self {
+        SetSigGenArbitraryProperties {
+            offset_voltage: 0,
+            pk_to_pk: 200_000,
+            phase_props: Default::default(),
+            arbitrary_waveform: vec![1, 1, 1, 1, 0, 0, 0, 0],
+            sweep_type: PicoSweepType::Up,
+            extra_operations: PicoExtraOperations::Off,
+            sweeps_shots: SweepShotCount::None,
+            trig_type: PicoSigGenTrigType::Rising,
+            trig_source: PicoSigGenTrigSource::None,
+            ext_in_threshold: 0,
+        }
+    }
+}
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +197,17 @@ impl PartialEq for State {
             (State::Closed, State::Closed)
                 | (State::Open { .. }, State::Open { .. })
                 | (State::Streaming { .. }, State::Streaming { .. })
+        )
+    }
+}
+
+impl PartialEq<Target> for State {
+    fn eq(&self, other: &Target) -> bool {
+        matches!(
+            (self, other),
+            (State::Closed, Target::Closed)
+                | (State::Open { .. }, Target::Open { .. })
+                | (State::Streaming { .. }, Target::Streaming { .. })
         )
     }
 }
@@ -205,6 +296,26 @@ impl PicoStreamingDevice {
         device.start_background_thread();
 
         device
+    }
+
+    pub fn wait_for_state_settle(&self) {
+        // TODO: timeout
+        let target_state = self.target_state.get();
+        let mut count = 0;
+        loop {
+            if *self.current_state.read() == target_state {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+            count += 1;
+            if count > 10 {
+                println!(
+                    "waiting for settle: current {:?}, target {:?}",
+                    *self.current_state.read(),
+                    target_state
+                );
+            }
+        }
     }
 
     pub fn get_serial(&self) -> String {
@@ -511,6 +622,152 @@ impl PicoStreamingDevice {
                 Duration::from_millis(50),
             )
         }
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn set_sig_gen_properties_built_in(
+        &self,
+        start_frequency: f64,
+        stop_frequency: f64,
+        increment: f64,
+        dwell_time: f64,
+        sweep_type: PicoSweepType,
+        sweeps_shots: SweepShotCount,
+        trigger_type: PicoSigGenTrigType,
+        trigger_source: PicoSigGenTrigSource,
+        ext_in_threshold: i16,
+    ) {
+        let current_state = self.current_state.read();
+        let handle = match current_state.clone() {
+            State::Closed => {
+                panic!("attempt to sig gen on closed device, no handle");
+            }
+            State::Open { handle } => handle,
+            State::Streaming { handle, .. } => handle,
+        };
+        self.device
+            .driver
+            .set_sig_gen_properties_built_in(
+                handle,
+                start_frequency,
+                stop_frequency,
+                increment,
+                dwell_time,
+                sweep_type,
+                sweeps_shots,
+                trigger_type,
+                trigger_source,
+                ext_in_threshold,
+            )
+            .unwrap();
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn sig_gen_software_control(&self, state: i16) -> PicoResult<()> {
+        let current_state = self.current_state.read();
+        let handle = match current_state.clone() {
+            State::Closed => {
+                panic!("attempt to sig gen on closed device, no handle");
+            }
+            State::Open { handle } => handle,
+            State::Streaming { handle, .. } => handle,
+        };
+        self.device.driver.sig_gen_software_control(handle, state)
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn set_sig_gen_built_in_v2(&self, props: SetSigGenBuiltInV2Properties) -> PicoResult<()> {
+        let current_state = self.current_state.read();
+        let handle = match current_state.clone() {
+            State::Closed => {
+                panic!("attempt to sig gen on closed device, no handle");
+            }
+            State::Open { handle } => handle,
+            State::Streaming { handle, .. } => handle,
+        };
+
+        self.device.driver.set_sig_gen_built_in_v2(handle, props)
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn sig_gen_arbitrary_min_max_values(&self) -> PicoResult<SigGenArbitraryMinMaxValues> {
+        let current_state = self.current_state.read();
+        let handle = match current_state.clone() {
+            State::Closed => {
+                panic!("attempt to sig gen on closed device, no handle");
+            }
+            State::Open { handle } => handle,
+            State::Streaming { handle, .. } => handle,
+        };
+        self.device.driver.sig_gen_arbitrary_min_max_values(handle)
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn set_sig_gen_arbitrary(&self, mut props: SetSigGenArbitraryProperties) -> PicoResult<()> {
+        // Start an AWG function
+        let current_state = self.current_state.read();
+        let handle = match current_state.clone() {
+            State::Closed => {
+                panic!("attempt to sig gen on closed device, no handle");
+            }
+            State::Open { handle } => handle,
+            State::Streaming { handle, .. } => {
+                panic!(
+                    "cannot set_sig_gen_arbitrary while streaming ; current handle {}",
+                    handle
+                );
+            }
+        };
+
+        let index_mode = PicoIndexMode::Single;
+
+        // check that we are within limits
+        let min_max = self
+            .device
+            .driver
+            .sig_gen_arbitrary_min_max_values(handle)?;
+        let min_size = min_max.min_size as usize;
+        let max_size = min_max.max_size as usize;
+        let n = props.arbitrary_waveform.len();
+        if min_size > n || max_size < n {
+            tracing::trace!(min_size = min_size, max_size = max_size, size = n);
+            return Err(PicoStatus::AWG_NOT_SUPPORTED.into());
+        }
+
+        let (start_delta_phase, stop_delta_phase, delta_phase_increment, dwell_count) =
+            match props.phase_props {
+                SetSigGenArbitraryPhaseProperties::FrequencyConstantHz(freq_hz) => {
+                    let phase = self
+                        .device
+                        .driver
+                        .sig_gen_frequency_to_phase(handle, freq_hz, index_mode, n as u32)?;
+                    (phase, phase, 0, min_max.dwell_count)
+                }
+                SetSigGenArbitraryPhaseProperties::PhasesFull {
+                    start,
+                    stop,
+                    increment,
+                    dwell_count,
+                } => (start, stop, increment, dwell_count),
+            };
+
+        self.device.driver.set_sig_gen_arbitrary(
+            handle,
+            props.offset_voltage,
+            props.pk_to_pk,
+            start_delta_phase,
+            stop_delta_phase,
+            delta_phase_increment,
+            dwell_count,
+            &mut props.arbitrary_waveform,
+            props.sweep_type,
+            props.extra_operations,
+            index_mode,
+            props.sweeps_shots,
+            props.trig_type,
+            props.trig_source,
+            props.ext_in_threshold,
+        )
     }
 }
 
